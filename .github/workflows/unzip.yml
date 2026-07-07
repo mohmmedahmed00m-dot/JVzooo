@@ -2,8 +2,7 @@ name: Unzip To Repo Root
 
 on:
   push:
-    tags-ignore:
-      - '**'
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -79,6 +78,6 @@ jobs:
             echo "⚠️  لا توجد تغييرات لعملها."
           else
             git commit -m "🤖 Auto unzip: extracted project into repo root [skip ci]"
-            git push origin HEAD:"${GITHUB_REF_NAME}"
-            echo "✅ تم الدفع بنجاح إلى الفرع: ${GITHUB_REF_NAME}"
+            git push
+            echo "✅ تم الدفع بنجاح."
           fi
