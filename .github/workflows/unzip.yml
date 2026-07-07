@@ -1,8 +1,9 @@
-name: Bulletproof Auto Unzip
+name: Unzip To Repo Root
 
 on:
   push:
-    branches: [ main ]
+    tags-ignore:
+      - '**'
   workflow_dispatch:
 
 jobs:
@@ -12,7 +13,7 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout full repo history
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -21,70 +22,63 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y unzip tree
+          sudo apt-get install -y unzip rsync
 
-      - name: Extract ALL zip files safely (bulletproof)
+      - name: Extract every zip directly into repo root
         run: |
-          echo "============================================"
-          echo "  Scanning repository for ZIP files..."
-          echo "============================================"
+          set -euo pipefail
+          shopt -s nullglob dotglob
 
-          ZIP_COUNT=0
-          FAIL_COUNT=0
+          # جمع كل ملفات الـ zip الموجودة في المستودع (باستثناء .git و .github)
+          mapfile -d '' -t ZIPS < <(find . \
+            -not -path './.git/*' \
+            -not -path './.github/*' \
+            -type f -iname '*.zip' -print0)
 
-          # أقوى مسح ممكن — يشمل المسافات والأحرف الخاصة في أسماء الملفات
-          while IFS= read -r -d '' file; do
-            echo ""
-            echo "▶ Processing: $file"
+          if [ "${#ZIPS[@]}" -eq 0 ]; then
+            echo "لا توجد ملفات zip لمعالجتها — لا شيء للقيام به."
+            exit 0
+          fi
 
-            # اسم المجلد المستخرج — تنظيف الاسم من الأقواس والمسافات
-            raw_base="$(basename "$file" .zip)"
-            safe_base="$(echo "$raw_base" | tr ' ()[]{}' '_______')"
-            folder="./extracted_${safe_base}"
+          for zip in "${ZIPS[@]}"; do
+            echo "▶ معالجة: $zip"
+            tmp="$(mktemp -d)"
+            unzip -o -q "$zip" -d "$tmp"
 
-            mkdir -p "$folder"
-
-            # فك الضغط مع إجبار overwrite وعرض تفاصيل الأخطاء
-            if unzip -o "$file" -d "$folder"; then
-              echo "✅ Success: extracted to $folder"
-              ZIP_COUNT=$((ZIP_COUNT + 1))
+            # لو كل المحتوى داخل مجلد غلاف واحد (مثل jvz-main/)، خذ محتوياته فقط
+            entries=("$tmp"/*)
+            if [ "${#entries[@]}" -eq 1 ] && [ -d "${entries[0]}" ]; then
+              src="${entries[0]}"
+              echo "   ↳ مجلد غلاف تم اكتشافه: $(basename "$src") — سيُنقل محتواه فقط إلى الجذر"
             else
-              echo "❌ Failed: $file"
-              FAIL_COUNT=$((FAIL_COUNT + 1))
+              src="$tmp"
             fi
 
-          done < <(find . \
-            -not -path './.git/*' \
-            -not -path './extracted_*' \
-            -type f \
-            -iname "*.zip" \
-            -print0)
+            # نسخ المحتوى إلى جذر المستودع مباشرة، مع استثناء .git و .github
+            rsync -a --exclude='.git/' --exclude='.github/' "$src"/ ./
 
-          echo ""
-          echo "============================================"
-          echo "  Done! ✅ Extracted: $ZIP_COUNT | ❌ Failed: $FAIL_COUNT"
-          echo "============================================"
+            rm -rf "$tmp"
+            rm -f "$zip"
+            echo "   ✅ تم الاستخراج إلى الجذر وحذف $zip"
+          done
 
-          # عرض هيكل المجلدات المستخرجة
-          echo ""
-          echo "📂 Extracted folder structure:"
-          find . -maxdepth 3 -path './extracted_*' | tree --fromfile 2>/dev/null || \
-          find . -maxdepth 3 -path './extracted_*' -print
+          # تنظيف أي مجلدات extracted_* متبقية من تشغيلات سابقة لووركفلو قديم
+          if compgen -G "./extracted_*" > /dev/null; then
+            echo "🧹 حذف مجلدات extracted_* القديمة..."
+            rm -rf ./extracted_*
+          fi
 
-      - name: Commit extracted files
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # إضافة كل الملفات المستخرجة فقط
-          git add ./extracted_* 2>/dev/null || true
           git add -A
 
-          # Commit فقط إذا في تغييرات فعلية
           if git diff --cached --quiet; then
-            echo "⚠️  No new changes to commit."
+            echo "⚠️  لا توجد تغييرات لعملها."
           else
-            git commit -m "🤖 Auto unzip: extracted ZIP files [skip ci]"
-            git push
-            echo "✅ Changes pushed successfully."
+            git commit -m "🤖 Auto unzip: extracted project into repo root [skip ci]"
+            git push origin HEAD:"${GITHUB_REF_NAME}"
+            echo "✅ تم الدفع بنجاح إلى الفرع: ${GITHUB_REF_NAME}"
           fi
